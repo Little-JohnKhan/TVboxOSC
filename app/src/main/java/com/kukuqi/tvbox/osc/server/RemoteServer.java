@@ -165,6 +165,9 @@ public class RemoteServer extends NanoHTTPD {
                     return NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "application/dns-message", new ByteArrayInputStream(rs), rs.length);
                 } else if (fileName.equals("/m3u8")) {
                     return NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK,  NanoHTTPD.MIME_PLAINTEXT, m3u8Content);
+                } else if (fileName.equals("/m3u8.m3u8")) {
+                    // 净化后的清单：带 .m3u8 后缀，方便外部下载器（1DM 等）识别成 HLS
+                    return NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "application/vnd.apple.mpegurl", m3u8Content);
                 }
             } else if (session.getMethod() == Method.POST) {
                 Map < String, String > files = new HashMap < String, String > ();

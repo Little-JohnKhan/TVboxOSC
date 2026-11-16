@@ -790,7 +790,8 @@ public class DetailActivity extends BaseVbActivity<ActivityDetailBinding> {
     public void use1DMDownload() {
         if (vodInfo != null && vodInfo.seriesMap.get(vodInfo.playFlag).size() > 0) {
             VodInfo.VodSeries vod = vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex);
-            String url = TextUtils.isEmpty(playFragment.getFinalUrl()) ? vod.url : playFragment.getFinalUrl();
+            String url = playFragment == null ? "" : playFragment.getDownloadUrl();
+            if (TextUtils.isEmpty(url)) url = vod.url;
             // 创建Intent对象，启动1DM App
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             intent.setDataAndType(Uri.parse(url), "video/mp4");
