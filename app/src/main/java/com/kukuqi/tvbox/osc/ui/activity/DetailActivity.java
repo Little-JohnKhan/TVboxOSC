@@ -53,6 +53,7 @@ import com.kukuqi.tvbox.osc.receiver.BatteryReceiver;
 import com.kukuqi.tvbox.osc.service.PlayService;
 import com.kukuqi.tvbox.osc.ui.adapter.ParseAdapter;
 import com.kukuqi.tvbox.osc.service.DownloadService;
+import com.kukuqi.tvbox.osc.ui.dialog.DownloadSeriesDialog;
 import com.kukuqi.tvbox.osc.ui.adapter.SeriesAdapter;
 import com.kukuqi.tvbox.osc.ui.adapter.SeriesFlagAdapter;
 import com.kukuqi.tvbox.osc.ui.dialog.AllVodSeriesBottomDialog;
@@ -195,17 +196,6 @@ public class DetailActivity extends BaseVbActivity<ActivityDetailBinding> {
         mBinding.mGridView.addItemDecoration(new LinearSpacingItemDecoration(20, false));
 
         seriesAdapter = new SeriesAdapter(false);
-        seriesAdapter.setOnDownloadClickListener(series -> {
-            if (vodInfo == null || series == null) return;
-            DownloadService.Task task = new DownloadService.Task();
-            task.sourceKey = sourceKey;
-            task.playFlag = vodInfo.playFlag;
-            task.seriesUrl = series.url;
-            task.vodName = vodInfo.name;
-            task.seriesName = series.name;
-            DownloadService.enqueue(DetailActivity.this, task);
-            ToastUtils.showShort("已加入下载队列：" + series.name);
-        });
         mBinding.mGridView.setAdapter(seriesAdapter);
         mBinding.mGridViewFlag.setHasFixedSize(true);
         seriesFlagAdapter = new SeriesFlagAdapter();
@@ -228,7 +218,15 @@ public class DetailActivity extends BaseVbActivity<ActivityDetailBinding> {
         findViewById(R.id.tvDownload).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                use1DMDownload();
+                if (vodInfo == null) {
+                    ToastUtils.showShort("数据还没加载完");
+                    return;
+                }
+                new XPopup.Builder(DetailActivity.this)
+                        .isViewMode(true)
+                        .hasNavigationBar(false)
+                        .asCustom(new DownloadSeriesDialog(DetailActivity.this, sourceKey, vodInfo))
+                        .show();
             }
         });
         mBinding.tvSort.setOnClickListener(new View.OnClickListener() {

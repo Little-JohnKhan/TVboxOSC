@@ -1,48 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/itemRoot"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<com.lihang.ShadowLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/sl"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content">
+    android:layout_height="wrap_content"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    app:hl_cornerRadius="@dimen/common_corners"
+    app:hl_layoutBackground="@android:color/transparent"
+    app:hl_strokeWith="0.6dp"
+    app:hl_strokeColor="@color/colorPrimary"
+    app:hl_layoutBackground_true="@color/colorPrimary"
+    app:hl_shapeMode="selected"
+    app:hl_bindTextView="@+id/tvSeries"
+    app:hl_textColor_true="#fff"
+    app:hl_textColor="@color/colorPrimary">
 
-    <com.lihang.ShadowLayout
-        android:id="@+id/sl"
+    <TextView
+        android:id="@+id/tvSeries"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        app:hl_bindTextView="@+id/tvSeries"
-        app:hl_cornerRadius="@dimen/common_corners"
-        app:hl_layoutBackground="@android:color/transparent"
-        app:hl_layoutBackground_true="@color/colorPrimary"
-        app:hl_shapeMode="selected"
-        app:hl_strokeColor="@color/colorPrimary"
-        app:hl_strokeWith="0.6dp"
-        app:hl_textColor="@color/colorPrimary"
-        app:hl_textColor_true="#fff">
-
-        <TextView
-            android:id="@+id/tvSeries"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:ellipsize="marquee"
-            android:gravity="center"
-            android:marqueeRepeatLimit="marquee_forever"
-            android:paddingHorizontal="10dp"
-            android:paddingVertical="6dp"
-            android:singleLine="true"
-            android:text="第210集"
-            android:textSize="12dp" />
-    </com.lihang.ShadowLayout>
-
-    <ImageView
-        android:id="@+id/ivDownload"
-        android:layout_width="16dp"
-        android:layout_height="16dp"
-        android:layout_gravity="top|end"
-        android:layout_margin="3dp"
-        android:alpha="0.5"
-        android:background="@android:color/transparent"
-        android:contentDescription="下载"
-        android:padding="1dp"
-        android:src="@drawable/ic_download_18" />
-
-</FrameLayout>
+        android:layout_height="match_parent"
+        android:ellipsize="marquee"
+        android:gravity="center"
+        android:marqueeRepeatLimit="marquee_forever"
+        android:text="第210集"
+        android:singleLine="true"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="6dp"
+        android:textSize="12dp"/>
+</com.lihang.ShadowLayout>

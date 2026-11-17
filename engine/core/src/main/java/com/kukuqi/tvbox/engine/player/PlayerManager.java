@@ -400,7 +400,7 @@ public class PlayerManager implements ParseCallback {
     }
 
     public void stop() {
-        engine.stop();
+        if (engine != null) engine.stop();
         stopParse();
     }
 
@@ -498,6 +498,7 @@ public class PlayerManager implements ParseCallback {
     }
 
     private void onPlayTimeout() {
+        if (engine == null) return;
         callback.onError(ResUtil.getString(R.string.core_error_play_timeout));
         stop();
     }
@@ -508,7 +509,7 @@ public class PlayerManager implements ParseCallback {
         player.removeListener(listener);
         engine = PlayerEngineFactory.create(decode, spec, listener);
         setPlayer(engine.getPlayer());
-        old.release();
+        if (old != null) old.release();
     }
 
     public void browse(PlaySpec spec, long startPositionMs) {
