@@ -60,4 +60,15 @@
         android:layout_marginTop="14dp"
         tools:listitem="@layout/item_series" />
 
+    <TextView
+        android:id="@+id/tvDone"
+        android:layout_width="360dp"
+        android:layout_height="44dp"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/shape_dialog_filter_bg"
+        android:gravity="center"
+        android:text="完成"
+        android:textColor="@color/text_foreground"
+        android:textSize="14sp" />
+
 </LinearLayout>

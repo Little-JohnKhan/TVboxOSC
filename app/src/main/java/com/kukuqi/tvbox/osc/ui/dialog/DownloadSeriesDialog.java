@@ -22,7 +22,9 @@ import com.lxj.xpopup.core.BottomPopupView;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 下载面板：底部半遮挡弹窗，列出全部集数，点哪一集就加入下载队列。
@@ -32,6 +34,8 @@ public class DownloadSeriesDialog extends BottomPopupView {
     private final String sourceKey;
     private final VodInfo vodInfo;
     private final List<VodInfo.VodSeries> list;
+    /** 本次面板里已经点过的集（按分片地址去重） */
+    private final Set<String> picked = new HashSet<>();
 
     public DownloadSeriesDialog(@NonNull @NotNull Context context, String sourceKey, VodInfo vodInfo) {
         super(context);
@@ -50,6 +54,8 @@ public class DownloadSeriesDialog extends BottomPopupView {
         super.onCreate();
         View openDir = findViewById(R.id.tvOpenDir);
         if (openDir != null) openDir.setOnClickListener(v -> openDownloadDir());
+        View doneBtn = findViewById(R.id.tvDone);
+        if (doneBtn != null) doneBtn.setOnClickListener(v -> dismiss());
 
         if (list == null || list.isEmpty()) {
             ToastUtils.showShort("当前线路没有剧集");
@@ -65,6 +71,7 @@ public class DownloadSeriesDialog extends BottomPopupView {
         rv.addItemDecoration(new GridSpacingItemDecoration(span, 20, true));
 
         SeriesAdapter adapter = new SeriesAdapter(true);
+        adapter.setPickedUrls(picked);
         adapter.setNewData(list);
         rv.setAdapter(adapter);
 
@@ -79,6 +86,12 @@ public class DownloadSeriesDialog extends BottomPopupView {
 
         adapter.setOnItemClickListener((a, view, position) -> {
             VodInfo.VodSeries series = list.get(position);
+            if (series.url != null && picked.contains(series.url)) {
+                ToastUtils.showShort("这一集已在队列里");
+                return;
+            }
+            if (series.url != null) picked.add(series.url);
+
             DownloadService.Task task = new DownloadService.Task();
             task.sourceKey = sourceKey;
             task.playFlag = vodInfo.playFlag;
@@ -86,8 +99,9 @@ public class DownloadSeriesDialog extends BottomPopupView {
             task.vodName = vodInfo.name;
             task.seriesName = series.name;
             DownloadService.enqueue(getContext(), task);
-            ToastUtils.showShort("已加入下载队列：" + series.name);
-            dismiss();
+
+            adapter.notifyItemChanged(position);
+            ToastUtils.showShort("已加入：" + series.name + "（可继续点其它集）");
         });
     }
 

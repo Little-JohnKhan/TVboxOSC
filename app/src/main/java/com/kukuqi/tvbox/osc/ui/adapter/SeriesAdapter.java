@@ -15,6 +15,7 @@ import com.kukuqi.tvbox.osc.bean.VodInfo;
 import com.lihang.ShadowLayout;
 
 import java.util.ArrayList;
+import java.util.Set;
 
 /**
  * @author pj567
@@ -23,10 +24,16 @@ import java.util.ArrayList;
  */
 public class SeriesAdapter extends BaseQuickAdapter<VodInfo.VodSeries, BaseViewHolder> {
     private boolean isGird;
+    /** 已加入下载队列的分片地址，用于在集数后面打勾 */
+    private Set<String> pickedUrls;
 
     public SeriesAdapter(boolean isGird) {
         super(R.layout.item_series, new ArrayList<>());
         this.isGird = isGird;
+    }
+
+    public void setPickedUrls(Set<String> urls) {
+        this.pickedUrls = urls;
     }
 
     @Override
@@ -34,7 +41,8 @@ public class SeriesAdapter extends BaseQuickAdapter<VodInfo.VodSeries, BaseViewH
         ShadowLayout sl = helper.getView(R.id.sl);
         TextView tvSeries = helper.getView(R.id.tvSeries);
         sl.setSelected(item.selected);
-        tvSeries.setText(item.name);
+        boolean picked = pickedUrls != null && item.url != null && pickedUrls.contains(item.url);
+        tvSeries.setText(picked ? item.name + " ✓" : item.name);
 
         if (!isGird){// 详情页横向展示时固定宽度
             ViewGroup.LayoutParams layoutParams = sl.getLayoutParams();
