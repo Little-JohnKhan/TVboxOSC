@@ -571,7 +571,7 @@ public class PlayFragment extends BaseLazyFragment {
                     @Override
                     public void onSuccess(com.lzy.okgo.model.Response<String> response) {
                         String content = response.body();
-                        if (!content.startsWith("#EXTM3U")) {
+                        if (!M3u8Purifier.looksLikeM3u8(content)) {
                             startPlayUrl(url, headers);
                             return;
                         }
@@ -610,10 +610,12 @@ public class PlayFragment extends BaseLazyFragment {
                             M3u8Purifier.Report purifyReport = new M3u8Purifier.Report();
                             RemoteServer.m3u8Content = M3u8Purifier.purify(content, url.substring(0, ilast + 1), purifyReport);
                             LOG.i("广告过滤(直连): " + purifyReport);
-                            if (RemoteServer.m3u8Content == null)
+                            if (RemoteServer.m3u8Content == null) {
+                                ToastUtils.showShort("广告过滤：未识别到广告，按原片播放");
                                 startPlayUrl(url, headers);
-                            else {
+                            } else {
                                 mCleanUrl = "http://127.0.0.1:" + RemoteServer.serverPort + "/m3u8.m3u8";
+                                ToastUtils.showShort("广告过滤：" + (purifyReport.rule.isEmpty() ? "" : "规则「" + purifyReport.rule + "」") + "剔除 " + purifyReport.dropped + " 片");
                                 startPlayUrl(mCleanUrl, headers);
                                 //Toast.makeText(getContext(), "已移除视频广告", Toast.LENGTH_SHORT).show();
                             }
@@ -632,10 +634,12 @@ public class PlayFragment extends BaseLazyFragment {
                                         RemoteServer.m3u8Content = M3u8Purifier.purify(content, finalforwardurl.substring(0, ilast + 1), purifyReport2);
                                         LOG.i("广告过滤(主清单): " + purifyReport2);
 
-                                        if (RemoteServer.m3u8Content == null)
+                                        if (RemoteServer.m3u8Content == null) {
+                                            ToastUtils.showShort("广告过滤：未识别到广告，按原片播放");
                                             startPlayUrl(finalforwardurl, headers);
-                                        else {
+                                        } else {
                                             mCleanUrl = "http://127.0.0.1:" + RemoteServer.serverPort + "/m3u8.m3u8";
+                                            ToastUtils.showShort("广告过滤：" + (purifyReport2.rule.isEmpty() ? "" : "规则「" + purifyReport2.rule + "」") + "剔除 " + purifyReport2.dropped + " 片");
                                             startPlayUrl(mCleanUrl, headers);
                                             //Toast.makeText(getContext(), "已移除视频广告", Toast.LENGTH_SHORT).show();
                                         }

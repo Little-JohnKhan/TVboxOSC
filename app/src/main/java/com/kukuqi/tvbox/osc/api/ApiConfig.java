@@ -19,6 +19,7 @@ import com.kukuqi.tvbox.osc.util.AES;
 import com.kukuqi.tvbox.osc.util.AdBlocker;
 import com.kukuqi.tvbox.osc.util.DefaultConfig;
 import com.kukuqi.tvbox.osc.util.HawkConfig;
+import com.kukuqi.tvbox.osc.util.M3u8Purifier;
 import com.kukuqi.tvbox.osc.util.MD5;
 import com.kukuqi.tvbox.osc.util.VideoParseRuler;
 import com.google.gson.Gson;
@@ -379,6 +380,29 @@ public class ApiConfig {
                 }
             }
         }
+        // 广告过滤规则（新格式 {name, hosts, regex}），交给 M3u8Purifier
+        java.util.List<M3u8Purifier.AdRule> adRules = new java.util.ArrayList<>();
+        if (infoJson.has("rules") && infoJson.get("rules").isJsonArray()) {
+            for (JsonElement one : infoJson.getAsJsonArray("rules")) {
+                if (!one.isJsonObject()) continue;
+                JsonObject ruleObj = one.getAsJsonObject();
+                if (!ruleObj.has("hosts") || !ruleObj.has("regex")) continue;
+                java.util.List<String> ruleHosts = new java.util.ArrayList<>();
+                java.util.List<String> ruleRegex = new java.util.ArrayList<>();
+                if (ruleObj.get("hosts").isJsonArray())
+                    for (JsonElement h : ruleObj.getAsJsonArray("hosts"))
+                        if (h.isJsonPrimitive()) ruleHosts.add(h.getAsString());
+                if (ruleObj.get("regex").isJsonArray())
+                    for (JsonElement r : ruleObj.getAsJsonArray("regex"))
+                        if (r.isJsonPrimitive()) ruleRegex.add(r.getAsString());
+                String ruleName = ruleObj.has("name") && ruleObj.get("name").isJsonPrimitive()
+                        ? ruleObj.get("name").getAsString() : "";
+                M3u8Purifier.AdRule adRule = new M3u8Purifier.AdRule(ruleName, ruleHosts, ruleRegex);
+                if (adRule.usable()) adRules.add(adRule);
+            }
+        }
+        M3u8Purifier.setRules(adRules);
+
         // IJK解码配置
         if(ijkCodes==null){
             ijkCodes = new ArrayList<>();
