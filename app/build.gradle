@@ -5,6 +5,8 @@ configurations.configureEach {
     exclude group: 'io.antmedia', module: 'rtmp-client'
     exclude group: 'xpp3', module: 'xpp3_min'
     exclude group: 'xpp3', module: 'xpp3'
+    // patch12: listenablefuture 是个空实现 jar，与 guava 里的同名类冲突
+    exclude group: 'com.google.guava', module: 'listenablefuture'
 }
 
 def tvBoxSigningStore = rootProject.file('TVBoxOSC.jks')
@@ -157,9 +159,18 @@ dependencies {
     implementation project(':tvbox-engine')
     implementation project(':source-runtime')
     implementation libs.media
-    // patch11: ts -> mp4 转封装用 media3 官方 Mp4Muxer
-    // 它支持 ctts（B 帧），而 android.media.MediaMuxer 不支持，硬转会无声+抽帧
-    implementation "androidx.media3:media3-muxer:1.8.0"
+    // patch12: ts -> mp4 转封装用 media3 官方 Mp4Muxer
+    //
+    // 注意：engine/core/libs 里已经有 lib-common-release.aar / lib-container-release.aar，
+    // 它们就是 media3-common / media3-container 1.11.0 的本地 aar。
+    // 这里必须 exclude 掉 Maven 的同名模块，否则 checkDebugDuplicateClasses 会报
+    // Duplicate class androidx.media3.common.*
+    implementation("androidx.media3:media3-muxer:1.11.0") {
+        exclude group: 'androidx.media3', module: 'media3-common'
+        exclude group: 'androidx.media3', module: 'media3-container'
+    }
+    // Mp4Muxer 内部用到 Guava 的 ImmutableList / Supplier，本地 aar 不带 Guava，需要单独引入
+    implementation 'com.google.guava:guava:33.0.0-android'
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.work:work-testing:2.9.1'
