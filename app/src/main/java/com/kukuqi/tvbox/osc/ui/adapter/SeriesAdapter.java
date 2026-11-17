@@ -1,6 +1,7 @@
 package com.kukuqi.tvbox.osc.ui.adapter;
 
 import android.graphics.Color;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
@@ -22,7 +23,18 @@ import java.util.ArrayList;
  * @description:
  */
 public class SeriesAdapter extends BaseQuickAdapter<VodInfo.VodSeries, BaseViewHolder> {
+
+    /** 每集右侧的下载按钮回调 */
+    public interface OnDownloadClickListener {
+        void onDownload(VodInfo.VodSeries series);
+    }
+
     private boolean isGird;
+    private OnDownloadClickListener downloadClickListener;
+
+    public void setOnDownloadClickListener(OnDownloadClickListener listener) {
+        this.downloadClickListener = listener;
+    }
 
     public SeriesAdapter(boolean isGird) {
         super(R.layout.item_series, new ArrayList<>());
@@ -36,10 +48,30 @@ public class SeriesAdapter extends BaseQuickAdapter<VodInfo.VodSeries, BaseViewH
         sl.setSelected(item.selected);
         tvSeries.setText(item.name);
 
-        if (!isGird){// 详情页横向展示时固定宽度
+        View ivDownload = helper.getView(R.id.ivDownload);
+        if (ivDownload != null) {
+            ivDownload.setVisibility(downloadClickListener == null ? View.GONE : View.VISIBLE);
+            ivDownload.setOnClickListener(v -> {
+                if (downloadClickListener != null) downloadClickListener.onDownload(item);
+            });
+        }
+
+        View root = helper.getView(R.id.itemRoot);
+        if (!isGird) {// 详情页横向展示时固定宽度
+            if (root != null) {
+                ViewGroup.LayoutParams rp = root.getLayoutParams();
+                rp.width = ConvertUtils.dp2px(120);
+                root.setLayoutParams(rp);
+            }
             ViewGroup.LayoutParams layoutParams = sl.getLayoutParams();
-            layoutParams.width = ConvertUtils.dp2px(120);
+            layoutParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
             sl.setLayoutParams(layoutParams);
+        } else {
+            if (root != null) {
+                ViewGroup.LayoutParams rp = root.getLayoutParams();
+                rp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                root.setLayoutParams(rp);
+            }
         }
     }
 
