@@ -165,7 +165,7 @@ public class DownloadService extends Service {
         }
 
         File dir = new File(Environment.getExternalStorageDirectory(),
-                Environment.DIRECTORY_DOWNLOAD + File.separator + ROOT + File.separator + safe(task.vodName));
+                Environment.DIRECTORY_DOWNLOADS + File.separator + ROOT + File.separator + safe(task.vodName));
         if (!dir.exists() && !dir.mkdirs()) {
             notifyUpdate("无法创建目录：" + dir.getAbsolutePath(), 0, total, doneCount);
             return;
