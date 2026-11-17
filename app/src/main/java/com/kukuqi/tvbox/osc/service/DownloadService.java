@@ -3,42 +3,42 @@ package com.kukuqi.tvbox.osc.service;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.Environment;
+import android.os.IBinder;
 import android.text.TextUtils;
 
+import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import com.kukuqi.tvbox.osc.R;
-import com.kukuqi.tvbox.osc.base.App;
 import com.kukuqi.tvbox.osc.core.CoreBridge;
 import com.kukuqi.tvbox.osc.util.LOG;
 import com.kukuqi.tvbox.osc.util.M3u8Downloader;
 
 import java.io.File;
-import java.io.FileWriter;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 /**
- * 下载队列（纯静态，不依赖前台服务）。
- *
- * <p>Android 12+ 对 startForegroundService 限制很严，ColorOS 上经常直接拒绝且不抛给调用方，
- * 所以这里改成「在 App 进程内起线程」，通知只作为可选展示，失败不影响下载。
- *
- * <p>每一步都写 /Download/TVBox/.download.log，方便排查。
+ * 串行下载队列：每点一次「下载」入队一集，服务按顺序跑完。
+ * 前台服务 + dataSync 类型，避免切后台被系统回收。
  */
-public final class DownloadService {
+public class DownloadService extends Service {
 
     private static final String CHANNEL_ID = "tvbox_download";
     private static final int NOTI_ID = 9527;
     private static final String ROOT = "TVBox";
 
+    /** 下载任务 */
     public static class Task {
         public String sourceKey;
         public String playFlag;
@@ -48,47 +48,75 @@ public final class DownloadService {
     }
 
     private static final List<Task> QUEUE = new LinkedList<>();
-    private static final Object LOCK = new Object();
-    private static volatile boolean running;
-    private static int total;
-    private static int done;
-    private static Context appCtx;
+    private static int total = 0;
+    private static int doneCount = 0;
 
-    private DownloadService() {
-    }
+    private volatile boolean running;
+    private NotificationManager nm;
 
+    /** 入队并拉起服务 */
     public static void enqueue(Context ctx, Task task) {
         if (task == null || TextUtils.isEmpty(task.seriesUrl)) return;
-        if (ctx != null) appCtx = ctx.getApplicationContext();
-        if (appCtx == null) appCtx = App.getInstance();
         synchronized (QUEUE) {
+            for (Task t : QUEUE) {
+                if (task.seriesUrl.equals(t.seriesUrl)) {
+                    LOG.i("已在队列中，跳过: " + task.vodName + " " + task.seriesName);
+                    return;
+                }
+            }
             QUEUE.add(task);
             total++;
         }
-        writeLog("入队: " + task.vodName + " / " + task.seriesName + " url=" + task.seriesUrl);
-        startIfNeeded();
+        Intent intent = new Intent(ctx, DownloadService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ContextCompat.startForegroundService(ctx, intent);
+        } else {
+            ctx.startService(intent);
+        }
     }
 
+    /** 队列里还剩多少（含正在下的） */
     public static int pending() {
         synchronized (QUEUE) {
             return QUEUE.size();
         }
     }
 
-    // ------------------------------------------------------------------ 线程
-
-    private static void startIfNeeded() {
-        synchronized (LOCK) {
-            if (running) return;
-            running = true;
-            Thread t = new Thread(DownloadService::drain, "tvbox-download");
-            t.setPriority(Thread.NORM_PRIORITY - 1);
-            t.start();
-            writeLog("下载线程已启动");
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID, "视频下载", NotificationManager.IMPORTANCE_LOW);
+            channel.setShowBadge(false);
+            if (nm != null) nm.createNotificationChannel(channel);
         }
     }
 
-    private static void drain() {
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        // Android 12+ 要求启动后 5 秒内进入前台；14+ 还要带 type
+        Notification first = buildNotification("准备下载", 0, 0, 0);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTI_ID, first, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        } else {
+            startForeground(NOTI_ID, first);
+        }
+        if (!running) {
+            running = true;
+            new Thread(this::loop, "tvbox-download").start();
+        }
+        return START_STICKY;
+    }
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+
+    private void loop() {
         while (true) {
             Task task;
             synchronized (QUEUE) {
@@ -101,151 +129,111 @@ public final class DownloadService {
             try {
                 downloadOne(task);
             } catch (Throwable e) {
-                writeLog("任务异常: " + e);
                 LOG.e(e);
-                notifyUpdate("失败：" + task.seriesName + " · " + e.getClass().getSimpleName(), -1);
+                notifyUpdate("下载失败：" + e.getMessage(), 0, total, doneCount);
             }
-            done++;
+            doneCount++;
         }
-        writeLog("队列结束 done=" + done + "/" + total);
-        done = 0;
+        doneCount = 0;
         total = 0;
-        cancelNotification();
+        stopForeground(true);
+        stopSelf();
     }
 
-    // ------------------------------------------------------------------ 单集
-
-    private static void downloadOne(Task task) {
+    private void downloadOne(Task task) {
         String title = safe(task.vodName) + " " + safe(task.seriesName);
-        notifyUpdate("解析地址：" + title, 0);
-        writeLog("开始: " + title);
+        notifyUpdate("正在解析：" + title, 0, total, doneCount);
 
-        String m3u8;
-        Map<String, String> headers;
-        try {
-            com.kukuqi.tvbox.engine.bean.Result result =
-                    CoreBridge.player(task.sourceKey, task.playFlag, task.seriesUrl);
-            if (result == null) {
-                writeLog("解析失败: result == null");
-                notifyUpdate("解析失败：" + title, -1);
-                return;
+        String m3u8 = "";
+        Map<String, String> headers = null;
+        // 引擎解析有概率返回空地址（同一站点连续解析时尤其明显），重试几次
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(1200L * attempt);
+                } catch (InterruptedException ignored) {
+                }
+                LOG.i("重新解析（第 " + (attempt + 2) + " 次）: " + title);
             }
-            if (result.needParse()) {
-                writeLog("需要解析器，跳过: " + title);
-                notifyUpdate("该集需要解析器，跳过：" + title, -1);
-                return;
+            try {
+                com.kukuqi.tvbox.engine.bean.Result result =
+                        CoreBridge.player(task.sourceKey, task.playFlag, task.seriesUrl);
+                if (result == null) continue;
+                if (result.needParse()) {
+                    notifyUpdate("该集需要解析器，无法批量下载：" + title, 0, total, doneCount);
+                    return;
+                }
+                String prefix = result.getPlayUrl();
+                String u = result.getUrl() == null ? null : result.getUrl().v();
+                String full = (TextUtils.isEmpty(prefix) ? "" : prefix) + (u == null ? "" : u);
+                if (!TextUtils.isEmpty(full)) {
+                    m3u8 = full;
+                    headers = result.getHeader();
+                    break;
+                }
+            } catch (Throwable e) {
+                LOG.e(e);
             }
-            String prefix = result.getPlayUrl();
-            String url = result.getUrl().v();
-            m3u8 = (TextUtils.isEmpty(prefix) ? "" : prefix) + (url == null ? "" : url);
-            headers = result.getHeader();
-            writeLog("地址: " + m3u8 + "  headers=" + (headers == null ? "null" : headers.keySet().toString()));
-        } catch (Throwable e) {
-            writeLog("解析异常: " + e + " @ " + task.seriesUrl);
-            notifyUpdate("解析异常：" + title, -1);
-            return;
         }
-
         if (TextUtils.isEmpty(m3u8)) {
-            writeLog("地址为空");
-            notifyUpdate("没拿到播放地址：" + title, -1);
+            notifyUpdate("拿不到播放地址（已重试 3 次）：" + title, 0, total, doneCount);
             return;
         }
+        LOG.i("地址: " + m3u8 + " headers=" + (headers == null ? "[]" : headers.keySet()));
 
         File dir = new File(Environment.getExternalStorageDirectory(),
-                Environment.DIRECTORY_DOWNLOADS + File.separator + ROOT + File.separator + safe(task.vodName));
+                Environment.DIRECTORY_DOWNLOAD + File.separator + ROOT + File.separator + safe(task.vodName));
         if (!dir.exists() && !dir.mkdirs()) {
-            writeLog("无法创建目录: " + dir.getAbsolutePath());
-            notifyUpdate("无法创建目录：" + dir.getAbsolutePath(), -1);
+            notifyUpdate("无法创建目录：" + dir.getAbsolutePath(), 0, total, doneCount);
             return;
         }
-
         File out = new File(dir, safe(task.seriesName));
-        writeLog("输出: " + out.getAbsolutePath());
 
         M3u8Downloader.download(m3u8, headers, out, new M3u8Downloader.Callback() {
             @Override
             public void onProgress(String stage, int percent) {
-                notifyUpdate(title + " · " + stage, percent);
+                notifyUpdate(title + " · " + stage, percent, total, doneCount);
             }
 
             @Override
             public void onSuccess(File file) {
-                writeLog("完成: " + file.getAbsolutePath() + " size=" + file.length());
-                notifyUpdate("完成：" + file.getName(), 100);
+                notifyUpdate("完成：" + file.getName(), 100, total, doneCount + 1);
             }
 
             @Override
             public void onError(String message) {
-                writeLog("失败: " + title + " · " + message);
-                notifyUpdate("失败：" + title + " · " + message, -1);
+                notifyUpdate("失败：" + title + " · " + message, 0, total, doneCount);
             }
         });
     }
 
-    // ------------------------------------------------------------------ 日志
+    // ------------------------------------------------------------------ 通知
 
-    /** 写诊断日志，路径 Download/TVBox/.download.log */
-    private static void writeLog(String msg) {
-        LOG.i("[下载] " + msg);
-        try {
-            Context ctx = appCtx != null ? appCtx : App.getInstance();
-            if (ctx == null) return;
-            File dir = new File(Environment.getExternalStorageDirectory(),
-                    Environment.DIRECTORY_DOWNLOADS + File.separator + ROOT);
-            if (!dir.exists()) dir.mkdirs();
-            File log = new File(dir, ".download.log");
-            FileWriter fw = new FileWriter(log, true);
-            try {
-                String time = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(new Date());
-                fw.write(time + "  " + msg + "\n");
-            } finally {
-                fw.close();
-            }
-        } catch (Throwable ignored) {
-        }
+    private void notifyUpdate(String text, int percent, int totalCount, int done) {
+        Notification n = buildNotification(text, percent, totalCount, done);
+        if (nm != null) nm.notify(NOTI_ID, n);
     }
 
-    // ------------------------------------------------------------------ 通知（可失败）
-
-    private static void notifyUpdate(String text, int percent) {
-        try {
-            Context ctx = appCtx != null ? appCtx : App.getInstance();
-            if (ctx == null) return;
-            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null) return;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                NotificationChannel channel = new NotificationChannel(
-                        CHANNEL_ID, "视频下载", NotificationManager.IMPORTANCE_LOW);
-                channel.setShowBadge(false);
-                nm.createNotificationChannel(channel);
-            }
-            NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL_ID)
-                    .setSmallIcon(R.mipmap.ic_launcher)
-                    .setContentTitle(total > 0
-                            ? String.format(Locale.US, "下载队列 %d/%d", Math.min(done + 1, total), total)
-                            : "视频下载")
-                    .setContentText(text)
-                    .setOnlyAlertOnce(true)
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .setAutoCancel(percent < 0);
-            if (percent >= 0) {
-                b.setProgress(100, Math.min(100, percent), false).setOngoing(true);
-            }
-            nm.notify(NOTI_ID, b.build());
-        } catch (Throwable ignored) {
+    private Notification buildNotification(String text, int percent, int totalCount, int done) {
+        String title = totalCount > 0
+                ? String.format(Locale.US, "下载队列 %d/%d", Math.min(done + 1, totalCount), totalCount)
+                : "视频下载";
+        NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.app_icon)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true);
+        if (percent > 0) {
+            b.setProgress(100, Math.min(100, percent), false);
+        } else {
+            b.setProgress(0, 0, true);
         }
+        return b.build();
     }
 
-    private static void cancelNotification() {
-        try {
-            Context ctx = appCtx != null ? appCtx : App.getInstance();
-            if (ctx == null) return;
-            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) nm.cancel(NOTI_ID);
-        } catch (Throwable ignored) {
-        }
-    }
+    // ------------------------------------------------------------------ 工具
 
     private static String safe(String name) {
         if (TextUtils.isEmpty(name)) return "未命名";
