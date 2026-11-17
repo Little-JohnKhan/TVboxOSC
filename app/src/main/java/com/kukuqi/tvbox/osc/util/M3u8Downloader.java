@@ -1,9 +1,7 @@
 package com.kukuqi.tvbox.osc.util;
 
-import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
-import android.media.MediaMuxer;
 import android.util.Base64;
 
 import java.io.ByteArrayOutputStream;
@@ -56,6 +54,11 @@ public final class M3u8Downloader {
     private static final long READ_TIMEOUT = 60;
     /** 清单最大读取量，超过就认定不是 m3u8 */
     private static final int MAX_PLAYLIST_BYTES = 2 * 1024 * 1024;
+    /**
+     * 是否尝试转封装成 mp4。
+     * 用 media3 的 Mp4Muxer（支持 ctts / B 帧）；失败或校验不过时自动退回 .ts。
+     */
+    private static final boolean REMUX_TO_MP4 = true;
 
     private static volatile OkHttpClient client;
 
@@ -76,6 +79,105 @@ public final class M3u8Downloader {
             }
         }
         return client;
+    }
+
+    /**
+     * 只做「拿清单 + 净化」，不下载任何分片。
+     *
+     * <p>用于把净化结果交给外部下载器（1DM 等）。产出的清单里**所有分片地址都是绝对地址**，
+     * 外部下载器可以直接连源站下载，不需要再经过本机代理。
+     *
+     * @param info 诊断信息（可为 null）
+     * @return 净化后的 m3u8 文本；失败返回 null
+     */
+    public static String prepareCleanPlaylist(String url, Map<String, String> headers, StringBuilder info) {
+        try {
+            String target = url;
+            Map<String, String> hdrs = headers;
+            if (isLocalProxy(url)) {
+                String[] un = unwrapLocalProxy(url);
+                if (un != null && un[0] != null) {
+                    target = un[0];
+                    hdrs = mergeHeaders(headers, un[1]);
+                }
+            }
+            String content = fetchText(target, hdrs, MAX_PLAYLIST_BYTES);
+            if (content == null || !M3u8Purifier.looksLikeM3u8(content)) {
+                if (!target.equals(url)) {
+                    target = url;
+                    hdrs = headers;
+                    content = fetchText(target, hdrs, MAX_PLAYLIST_BYTES);
+                }
+            }
+            if (content == null || !M3u8Purifier.looksLikeM3u8(content)) {
+                if (info != null) info.append("不是有效的 m3u8");
+                return null;
+            }
+            String base = target;
+            String variant = M3u8Purifier.pickVariant(content, base);
+            if (variant != null) {
+                base = variant;
+                content = fetchText(variant, hdrs, MAX_PLAYLIST_BYTES);
+                if (content == null) {
+                    if (info != null) info.append("子清单拉取失败");
+                    return null;
+                }
+            }
+            M3u8Purifier.Report rep = new M3u8Purifier.Report();
+            String clean = M3u8Purifier.purify(content, base, rep);
+            if (info != null) info.append(rep.toString());
+            // 没识别出广告时 purify 返回 null，此时用原清单，
+            // 但必须自己把分片地址绝对化，否则外部下载器会拼错
+            return clean != null ? clean : absolutize(M3u8Purifier.stripBom(content), base);
+        } catch (Exception e) {
+            if (info != null) info.append("异常:").append(e.getMessage());
+            return null;
+        }
+    }
+
+    /** 把清单里的相对地址（分片行、EXT-X-KEY/EXT-X-MAP 的 URI）全部换成绝对地址 */
+    public static String absolutize(String content, String base) {
+        String nl = content.contains("\r\n") ? "\r\n" : "\n";
+        String[] lines = content.split(nl, -1);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            String s = line.trim();
+            if (!s.isEmpty() && s.charAt(0) != '#') {
+                String full = M3u8Purifier.resolve(base, s);
+                sb.append(full == null ? s : full);
+            } else if (s.startsWith("#EXT-X-KEY") || s.startsWith("#EXT-X-MAP")) {
+                sb.append(fixTagUri(line, base));
+            } else {
+                sb.append(line);
+            }
+            if (i < lines.length - 1) sb.append(nl);
+        }
+        return sb.toString();
+    }
+
+    /** 处理 #EXT-X-KEY:METHOD=AES-128,URI="key.key" 这类标签里的相对 URI */
+    private static String fixTagUri(String line, String base) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("URI=\"([^\"]*)\"")
+                    .matcher(line);
+            StringBuffer out = new StringBuffer();
+            while (m.find()) {
+                String uri = m.group(1);
+                if (uri.startsWith("http://") || uri.startsWith("https://") || uri.startsWith("data:")) {
+                    continue;
+                }
+                String full = M3u8Purifier.resolve(base, uri);
+                if (full != null) {
+                    m.appendReplacement(out, "URI=\"" + java.util.regex.Matcher.quoteReplacement(full) + "\"");
+                }
+            }
+            m.appendTail(out);
+            return out.toString();
+        } catch (Exception e) {
+            return line;
+        }
     }
 
     /**
@@ -183,25 +285,33 @@ public final class M3u8Downloader {
             concat(partDir, segs.size(), tsFile);
             wipe(partDir);
 
-            cb.onProgress("转封装为 mp4", 90);
-            File mp4 = new File(outFile.getParentFile(), outFile.getName() + ".mp4");
-            boolean remuxed = false;
-            try {
+            // 转封装成 mp4。
+            //
+            // 用 media3 官方的 Mp4Muxer：它按 PTS 正确生成 ctts，能处理 B 帧。
+            // 之前用 android.media.MediaMuxer，那个 API 没有写 ctts 的能力，
+            // 遇到带 B 帧的 HLS 流（PTS 天然非单调）就会：音频轨异常中断（无声）、
+            // 视频帧显示顺序错乱（抽帧）、样本表索引对不上（拖进度条卡死）。
+            // 转封装失败或产物校验不过时，自动回退交付 .ts，不给用户坏文件。
+            if (REMUX_TO_MP4) {
+                cb.onProgress("转封装为 mp4", 90);
+                File mp4 = new File(outFile.getParentFile(), outFile.getName() + ".mp4");
+                boolean remuxed = false;
+                try {
+                    if (mp4.exists()) mp4.delete();
+                    remuxed = Mp4Remuxer.remux(tsFile, mp4);
+                } catch (Throwable ignored) {
+                }
+                if (remuxed && verifyMp4(mp4)) {
+                    tsFile.delete();
+                    cb.onProgress("完成", 100);
+                    cb.onSuccess(mp4);
+                    return;
+                }
                 if (mp4.exists()) mp4.delete();
-                remuxed = remux(tsFile, mp4);
-            } catch (Throwable ignored) {
             }
 
-            if (remuxed && verifyMp4(mp4)) {
-                tsFile.delete();
-                cb.onProgress("完成", 100);
-                cb.onSuccess(mp4);
-            } else {
-                // 转封装出来的 mp4 校验不过：别给用户一个打不开的文件，保留 ts
-                if (mp4.exists()) mp4.delete();
-                cb.onProgress("完成（转 mp4 失败，保留 ts）", 100);
-                cb.onSuccess(tsFile);
-            }
+            cb.onProgress("完成", 100);
+            cb.onSuccess(tsFile);
         } catch (OutOfMemoryError e) {
             cb.onError("内存不足，该地址可能不是清单而是视频文件");
         } catch (Exception e) {
@@ -319,7 +429,7 @@ public final class M3u8Downloader {
     // ------------------------------------------------------------------ 本地代理解包
 
     /** 是否是 TVBox 自己的本地转发地址：http://127.0.0.1:9979/proxy?do=m3u8&url=... */
-    private static boolean isLocalProxy(String url) {
+    public static boolean isLocalProxy(String url) {
         if (url == null) return false;
         String u = url.toLowerCase(Locale.US);
         if (!u.startsWith("http://")) return false;
@@ -334,7 +444,7 @@ public final class M3u8Downloader {
      *
      * @return {真实地址, headers 原文}；解不出返回 null
      */
-    private static String[] unwrapLocalProxy(String url) {
+    public static String[] unwrapLocalProxy(String url) {
         try {
             int q = url.indexOf('?');
             if (q < 0) return null;
@@ -555,93 +665,6 @@ public final class M3u8Downloader {
     }
 
     // ------------------------------------------------------------------ 转封装
-
-    private static boolean remux(File ts, File mp4) {
-        MediaExtractor extractor = new MediaExtractor();
-        MediaMuxer muxer = null;
-        try {
-            extractor.setDataSource(ts.getAbsolutePath());
-            int trackCount = extractor.getTrackCount();
-            List<Integer> srcTracks = new ArrayList<>();
-            muxer = new MediaMuxer(mp4.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-            List<Integer> dstTracks = new ArrayList<>();
-
-            boolean hasVideo = false;
-            boolean hasAudio = false;
-            for (int i = 0; i < trackCount; i++) {
-                MediaFormat f = extractor.getTrackFormat(i);
-                String mime = f.getString(MediaFormat.KEY_MIME);
-                if (mime == null) continue;
-                boolean video = mime.startsWith("video/");
-                boolean audio = mime.startsWith("audio/");
-                if (!video && !audio) continue;
-                // 拼接的 ts 每段都带自己的 PMT，extractor 可能报出重复轨道，
-                // 只保留第一条视频和第一条音频，否则 mp4 里会出现两条同类型轨、播放器判损坏
-                if (video && hasVideo) continue;
-                if (audio && hasAudio) continue;
-                if (video) hasVideo = true;
-                if (audio) hasAudio = true;
-                int dst = muxer.addTrack(f);
-                srcTracks.add(i);
-                dstTracks.add(dst);
-            }
-            if (srcTracks.isEmpty()) return false;
-
-            muxer.start();
-            int n = srcTracks.size();
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            ByteBuffer buf = ByteBuffer.allocate(4 * 1024 * 1024);
-            int[] sampleCount = new int[n];
-
-            // 按轨道整轨读，不做跨轨交叉 selectTrack。
-            // 关键：PTS 原样写入，绝不能"修正回退"。
-            // H.264 的 B 帧重排会让 PTS 天然非单调（1.56→2.20→1.88→1.72），
-            // DTS 才是单调的。旧代码把每次 PTS 回退都加 1 秒位移，
-            // 时间轴被累积推前，产出的 mp4 时间戳全乱，播放器直接判损坏。
-            for (int t = 0; t < n; t++) {
-                extractor.selectTrack(srcTracks.get(t));
-                int count = 0;
-                while (true) {
-                    buf.clear();
-                    int size = extractor.readSampleData(buf, 0);
-                    if (size < 0) break;
-                    long pts = extractor.getSampleTime();
-                    if (pts < 0) {
-                        extractor.advance();
-                        continue;
-                    }
-                    info.offset = 0;
-                    info.size = size;
-                    info.presentationTimeUs = pts;
-                    info.flags = extractor.getSampleFlags();
-                    muxer.writeSampleData(dstTracks.get(t), buf, info);
-                    count++;
-                    extractor.advance();
-                }
-                sampleCount[t] = count;
-                LOG.i("remux 轨道" + srcTracks.get(t) + " 样本数=" + count);
-            }
-
-            for (int i = 0; i < n; i++) {
-                if (sampleCount[i] <= 0) return false;
-            }
-
-            muxer.stop();
-            return true;
-        } catch (Throwable e) {
-            LOG.e(e);
-            return false;
-        } finally {
-            try {
-                if (muxer != null) muxer.release();
-            } catch (Exception ignored) {
-            }
-            try {
-                extractor.release();
-            } catch (Exception ignored) {
-            }
-        }
-    }
 
     /** 校验产出的 mp4：有视频轨 + 能读出首样本 + 时长合理，否则判无效 */
     private static boolean verifyMp4(File f) {

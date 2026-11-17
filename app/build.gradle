@@ -37,8 +37,8 @@ android {
         minSdkVersion 24
         targetSdkVersion 34
         buildConfigField 'String', 'RUNTIME_CATALOG_URL', groovy.json.JsonOutput.toJson(providers.gradleProperty('runtimeCatalogUrl').getOrElse('https://github.com/kukuqi666/TVboxOSC/releases/latest/download/catalog.json'))
-        versionCode 314
-        versionName '3.1.4'
+        versionCode 310
+        versionName '3.1.0'
         multiDexEnabled true
         testInstrumentationRunner 'com.kukuqi.tvbox.osc.RegressionTestRunner'
         //设置room的Schema的位置
@@ -157,6 +157,9 @@ dependencies {
     implementation project(':tvbox-engine')
     implementation project(':source-runtime')
     implementation libs.media
+    // patch11: ts -> mp4 转封装用 media3 官方 Mp4Muxer
+    // 它支持 ctts（B 帧），而 android.media.MediaMuxer 不支持，硬转会无声+抽帧
+    implementation "androidx.media3:media3-muxer:1.8.0"
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.work:work-testing:2.9.1'

@@ -67,6 +67,7 @@ import com.kukuqi.tvbox.osc.util.AdBlocker;
 import com.kukuqi.tvbox.osc.util.DefaultConfig;
 import com.kukuqi.tvbox.osc.util.HawkConfig;
 import com.kukuqi.tvbox.osc.util.LOG;
+import com.kukuqi.tvbox.osc.util.M3u8Downloader;
 import com.kukuqi.tvbox.osc.util.M3u8Purifier;
 import com.kukuqi.tvbox.osc.util.MD5;
 import com.kukuqi.tvbox.osc.util.PlayerHelper;
@@ -543,6 +544,24 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
 
+    /**
+     * 净化用的 base 地址。
+     *
+     * <p>播放地址可能是 TVBox 自己的本地转发地址
+     * （http://127.0.0.1:9979/proxy?do=m3u8&url=...），直接拿它当 base 会把相对分片
+     * 拼成 http://127.0.0.1:9979/xxx.ts，根本下不到。这里先解包出真实源地址。
+     */
+    private String cleanBase(String url) {
+        try {
+            if (M3u8Downloader.isLocalProxy(url)) {
+                String[] un = M3u8Downloader.unwrapLocalProxy(url);
+                if (un != null && un[0] != null && !un[0].isEmpty()) return un[0];
+            }
+        } catch (Throwable ignored) {
+        }
+        return url;
+    }
+
     void playUrl(String url, HashMap<String, String> headers) {
         mCurrentUrl = url;
         mCleanUrl = null;
@@ -605,13 +624,14 @@ public class PlayFragment extends BaseLazyFragment {
                             }
                         }
                         if ("".equals(forwardurl)) {
-                            int ilast = url.lastIndexOf('/');
-
                             M3u8Purifier.Report purifyReport = new M3u8Purifier.Report();
-                            RemoteServer.m3u8Content = M3u8Purifier.purify(content, url.substring(0, ilast + 1), purifyReport);
+                            RemoteServer.m3u8Content = M3u8Purifier.purify(content, cleanBase(url), purifyReport);
                             LOG.i("广告过滤(直连): " + purifyReport);
                             if (RemoteServer.m3u8Content == null) {
                                 ToastUtils.showShort("广告过滤：未识别到广告，按原片播放");
+                                // 没广告可删时，把绝对化后的原清单挂到 /m3u8，
+                                // 这样外部下载器仍能拿到一份可直接使用的清单
+                                RemoteServer.m3u8Content = M3u8Downloader.absolutize(content, cleanBase(url));
                                 startPlayUrl(url, headers);
                             } else {
                                 mCleanUrl = "http://127.0.0.1:" + RemoteServer.serverPort + "/m3u8.m3u8";
@@ -629,13 +649,13 @@ public class PlayFragment extends BaseLazyFragment {
                                     @Override
                                     public void onSuccess(com.lzy.okgo.model.Response<String> response) {
                                         String content = response.body();
-                                        int ilast = finalforwardurl.lastIndexOf('/');
                                         M3u8Purifier.Report purifyReport2 = new M3u8Purifier.Report();
-                                        RemoteServer.m3u8Content = M3u8Purifier.purify(content, finalforwardurl.substring(0, ilast + 1), purifyReport2);
+                                        RemoteServer.m3u8Content = M3u8Purifier.purify(content, cleanBase(finalforwardurl), purifyReport2);
                                         LOG.i("广告过滤(主清单): " + purifyReport2);
 
                                         if (RemoteServer.m3u8Content == null) {
                                             ToastUtils.showShort("广告过滤：未识别到广告，按原片播放");
+                                            RemoteServer.m3u8Content = M3u8Downloader.absolutize(content, cleanBase(finalforwardurl));
                                             startPlayUrl(finalforwardurl, headers);
                                         } else {
                                             mCleanUrl = "http://127.0.0.1:" + RemoteServer.serverPort + "/m3u8.m3u8";

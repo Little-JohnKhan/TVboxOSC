@@ -60,6 +60,15 @@ public class RemoteServer extends NanoHTTPD {
 
     public static String m3u8Content;
 
+    /**
+     * 多集净化清单：key = 集标识，value = 净化后的 m3u8 文本。
+     *
+     * <p>原来只有一个 m3u8Content，第二集净化会覆盖第一集，
+     * 导致批量把地址丢给外部下载器时互相踩。改成按集存放后，
+     * 每一集都能拿到 /m3u8?id=xxx 这样的独立地址。
+     */
+    public static final Map<String, String> m3u8Map = new java.util.concurrent.ConcurrentHashMap<>();
+
     public RemoteServer(int port, Context context) {
         super(port);
         mContext = context;
@@ -163,11 +172,25 @@ public class RemoteServer extends NanoHTTPD {
                         rs = new byte[0];
                     }
                     return NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "application/dns-message", new ByteArrayInputStream(rs), rs.length);
-                } else if (fileName.equals("/m3u8")) {
-                    return NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK,  NanoHTTPD.MIME_PLAINTEXT, m3u8Content);
-                } else if (fileName.equals("/m3u8.m3u8")) {
-                    // 净化后的清单：带 .m3u8 后缀，方便外部下载器（1DM 等）识别成 HLS
-                    return NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "application/vnd.apple.mpegurl", m3u8Content);
+                } else if (fileName.equals("/m3u8") || fileName.equals("/m3u8.m3u8")) {
+                    // /m3u8?id=xxx 取指定那一集的净化清单；不带 id 时退回最近一次结果
+                    String id = session.getParms() == null ? null : session.getParms().get("id");
+                    String body = null;
+                    if (id != null && !id.isEmpty()) body = m3u8Map.get(id);
+                    if (body == null || body.isEmpty()) body = m3u8Content;
+                    boolean hls = body != null && !body.isEmpty();
+                    if (!hls) {
+                        // 没有净化结果时返回可读提示，方便用浏览器直接诊断
+                        body = "# 当前没有已净化的清单\n"
+                             + "# 可能原因：\n"
+                             + "#   1. 这一集还没开始播放（净化只在 playUrl 时执行）\n"
+                             + "#   2. 设置里的「广告过滤」是关闭的\n"
+                             + "#   3. 播放地址不是 m3u8\n"
+                             + "#   4. 清单不含可识别的广告特征，直接按原片播放\n"
+                             + (id == null ? "" : "#   5. 指定 id 不存在：" + id + "\n");
+                    }
+                    return NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK,
+                            hls ? "application/vnd.apple.mpegurl" : NanoHTTPD.MIME_PLAINTEXT, body);
                 }
             } else if (session.getMethod() == Method.POST) {
                 Map < String, String > files = new HashMap < String, String > ();
